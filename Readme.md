@@ -20,6 +20,7 @@ Traditional multi-agent frameworks rely on a central "manager" or "router" LLM t
 7. [Advanced Usage](#advanced-usage)
    - [Callbacks & Streaming (UI Integration)](#callbacks--streaming-ui-integration)
    - [Context Window Management](#context-window-management)
+   - [Observability & Tracing (LangSmith)](#observability--tracing-langsmith)
 
 ---
 
@@ -200,3 +201,41 @@ chat = GroupChat(
     include_silent_in_history=False # Keep [SILENT] messages out of the context window
 )
 ```
+
+
+### Observability & Tracing (LangSmith)
+
+OpenCircle has built-in support for **LangSmith** to provide deep visibility into every agent's thought process, API latency, and token usage. This allows you to debug exactly why an agent chose to speak or why it stayed silent.
+
+#### 1. Setup
+Install the LangSmith client and set your environment variables:
+
+```bash
+uv pip install langsmith
+```
+
+```text
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=ls__your_key_here
+LANGCHAIN_PROJECT=opencircle_dev
+```
+
+#### 2. Usage
+Tracing is automatically enabled if the environment variables are present. You can also pass the configuration explicitly when initializing the chat:
+
+```python
+chat = GroupChat(
+    agents=agents,
+    langchain_api_key="ls__your_key_here", # Optional: overrides environment
+    langchain_project="my_gc_project"
+)
+```
+
+#### 3. What you see in the dashboard
+Once enabled, every round of chat creates a structured trace:
+
+- `agent_turn`: A high-level span showing which specific agent is attempting to respond.
+
+- `llm_[provider]`: A detailed span showing the exact raw JSON history sent to the provider (OpenAI/Groq/etc.) and the raw text response received.
+
+This makes it easy to spot formatting errors, token limits, or logic issues in real-time.

@@ -8,6 +8,7 @@ dependencies = [
     "anthropic>=0.114.0",
     "google-generativeai>=0.8.6",
     "groq>=1.5.0",
+    "langsmith>=0.9.4",
     "openai>=2.44.0",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.13.0",

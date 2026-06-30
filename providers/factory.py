@@ -7,6 +7,7 @@ from .google_provider import GoogleProvider
 from .nvidia_provider import NvidiaProvider
 from .openrouter_provider import OpenRouterProvider
 
+from langsmith import traceable
 
 class ProviderFactory:
     """Factory for creating provider instances."""
@@ -29,7 +30,13 @@ class ProviderFactory:
         if name not in self._providers:
             available = ", ".join(self._providers.keys())
             raise ValueError(f"Unknown provider: {provider_name}. Available: {available}")
-        return self._providers[name](api_key=api_key, **kwargs)
+        instance=self._providers[name](api_key=api_key, **kwargs)
+        
+        instance.chat = traceable( run_type="llm", name=f"llm_{name}")(instance.chat)
+
+        instance.sync_chat = traceable( run_type="llm", name=f"llm_{name}_sync" )(instance.sync_chat)
+
+        return instance
     
     def available(self):
         """List available provider names."""

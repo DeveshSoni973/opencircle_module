@@ -2,11 +2,14 @@
 
 import asyncio
 import logging
+import os
 from .models import Message, RoundResult
 from .registry import AgentRegistry
 from .context_builder import ContextBuilder
 from .system_prompts.loader import SystemPromptLoader
 from .providers.factory import ProviderFactory
+
+from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,8 @@ class GroupChat:
         on_message=None,
         include_silent_in_history=False,
         max_history_messages=None,
+        langchain_api_key=None,
+        langchain_project="opencircle"
     ):
         self.agents = agents
         self.system_prompt_name = system_prompt
@@ -48,6 +53,10 @@ class GroupChat:
         self.current_query = ""
         self.round_num = 0
         self.terminated = False
+        if langchain_api_key:
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_API_KEY"] = langchain_api_key
+            os.environ["LANGCHAIN_PROJECT"] = langchain_project
     
     def _get_provider(self, agent):
         """Get or create provider for an agent."""
@@ -69,6 +78,7 @@ class GroupChat:
             user_query=self.current_query,
         )
     
+    @traceable(run_type="chain", name="agent_turn")
     async def _agent_respond(self, agent):
         """Single agent: build context, call LLM, return response or None."""
         system = self._build_system_prompt(agent)
