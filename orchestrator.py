@@ -142,9 +142,9 @@ class GroupChat:
         )
     
     async def run(self, query):
-        """Run the group chat on a user query. Returns full history."""
+        """Run the group chat on a user query, continuing prior history. Returns full history."""
         self.current_query = query
-        self.history = [Message(sender_id="usr", content=query)]
+        self.history.append(Message(sender_id="usr", content=query))
         self.round_num = 0
         self.terminated = False
         
@@ -174,3 +174,10 @@ class GroupChat:
             name = self.registry.get_name(msg.sender_id)
             lines.append(f"{name}: {msg.content}")
         return "\n".join(lines)
+    
+    def reset(self):
+        """Clear history to start a new conversation with the same agents."""
+        self.history = []
+        self.round_num = 0
+        self.terminated = False
+        self.current_query = ""
