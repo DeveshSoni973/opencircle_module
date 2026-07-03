@@ -82,13 +82,34 @@ class GroupChat:
     async def _agent_respond(self, agent):
         """Single agent: build context, call LLM, return response or None."""
         system = self._build_system_prompt(agent)
-        messages = self.builder.build(
-            self.history,
-            agent,
-            system,
-            include_silent=self.include_silent,
-            max_messages=self.max_history,
-        )
+
+        if agent.history_cursor==-1 or self.max_history is not None:
+            agent.formatted_history = self.builder.build(
+                self.history,
+                agent,
+                include_silent=self.include_silent,
+                max_messages=self.max_history,
+                prepend_system=False,
+            )
+        else:
+            new_msgs=self.history[agent.history_cursor + 1:]
+            if new_msgs:
+                built = self.builder.build(
+                    new_msgs,
+                    agent,
+                    include_silent=self.include_silent,
+                    prepend_system=False,
+                )
+
+                if (agent.formatted_history and built
+                    and agent.formatted_history[-1]["role"] == built[0]["role"]):
+                    agent.formatted_history[-1]["content"] += "\n\n" + built[0]["content"]
+                    agent.formatted_history.extend(built[1:])
+                else:
+                    agent.formatted_history.extend(built)
+        
+        agent.history_cursor = len(self.history) - 1
+        messages = [{"role": "system", "content": system}] + agent.formatted_history
         
         provider = self._get_provider(agent)
         
@@ -191,3 +212,7 @@ class GroupChat:
         self.round_num = 0
         self.terminated = False
         self.current_query = ""
+
+        for agent in self.agents:
+            agent.formatted_history = []
+            agent.history_cursor = -1

@@ -52,6 +52,8 @@ class Agent:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.agent_id = str(uuid.uuid4())
+        self.formatted_history = []
+        self.history_cursor = -1
     
     def __repr__(self) -> str:
         return f"Agent(name={self.name!r}, model={self.model!r}, provider={self.provider!r})"
