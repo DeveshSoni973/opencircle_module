@@ -8,5 +8,3 @@ Focus on:
 
 Say [SILENT] if already covered.
 Say [DONE] if resolved.
-
-Current user query: $user_query

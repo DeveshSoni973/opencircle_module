@@ -8,7 +8,7 @@ from .registry import AgentRegistry
 from .context_builder import ContextBuilder
 from .system_prompts.loader import SystemPromptLoader
 from .providers.factory import ProviderFactory
-
+import re
 from langsmith import traceable
 
 logger = logging.getLogger(__name__)
@@ -75,24 +75,28 @@ class GroupChat:
             self.system_prompt_name,
             agent_name=agent.name,
             other_agents=", ".join(other_names),
-            user_query=self.current_query,
         )
     
     @traceable(run_type="chain", name="agent_turn")
     async def _agent_respond(self, agent):
         """Single agent: build context, call LLM, return response or None."""
         system = self._build_system_prompt(agent)
-
-        if agent.history_cursor==-1 or self.max_history is not None:
+        
+        # Snapshot history at start — won't see concurrent additions
+        snapshot = self.history[:len(self.history)]
+        
+        if agent.history_cursor == -1 or self.max_history:
+            # Full rebuild (first time or sliding window active)
             agent.formatted_history = self.builder.build(
-                self.history,
+                snapshot,
                 agent,
                 include_silent=self.include_silent,
                 max_messages=self.max_history,
                 prepend_system=False,
             )
         else:
-            new_msgs=self.history[agent.history_cursor + 1:]
+            # Incremental: only new messages since last snapshot
+            new_msgs = snapshot[agent.history_cursor + 1:]
             if new_msgs:
                 built = self.builder.build(
                     new_msgs,
@@ -100,15 +104,24 @@ class GroupChat:
                     include_silent=self.include_silent,
                     prepend_system=False,
                 )
-
                 if (agent.formatted_history and built
                     and agent.formatted_history[-1]["role"] == built[0]["role"]):
                     agent.formatted_history[-1]["content"] += "\n\n" + built[0]["content"]
                     agent.formatted_history.extend(built[1:])
                 else:
                     agent.formatted_history.extend(built)
+            else:
+                agent.formatted_history.append({
+                    "role": "user",
+                    "content": (
+                        "No new messages have been added since your last turn. "
+                        "If you have more to contribute, continue naturally. "
+                        "Otherwise respond with [SILENT]."
+                    )
+                })
         
-        agent.history_cursor = len(self.history) - 1
+        agent.history_cursor = len(snapshot) - 1
+        
         messages = [{"role": "system", "content": system}] + agent.formatted_history
         
         provider = self._get_provider(agent)
@@ -121,38 +134,64 @@ class GroupChat:
                 max_tokens=agent.max_tokens,
             )
             
-            if response.strip() == "[SILENT]":
+            response = response.strip()
+            if not response:
                 return agent.agent_id, None
+            match = re.search(r"\[silent\]", response, flags=re.IGNORECASE)
+            if match:
+                response = response[:match.start()].rstrip()
+                if not response:
+                    return agent.agent_id, None
             return agent.agent_id, response
             
         except Exception as e:
             logger.error(f"Response failed for {agent.name}: {e}")
             return agent.agent_id, None
-    
+
     async def _run_round(self):
-        """Execute one round: all agents parallel, gather responses."""
+        """Execute one round: all agents parallel, process results as they arrive."""
         self.round_num += 1
         
-        tasks = [self._agent_respond(agent) for agent in self.agents]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = {
+            asyncio.create_task(self._agent_respond(agent)): agent 
+            for agent in self.agents
+        }
         
         responses = {}
         messages_added = []
         
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"Task failed: {result}")
-                continue
-            agent_id, response = result
-            responses[agent_id] = response
+        while tasks:
+            done, pending = await asyncio.wait(
+                tasks.keys(), 
+                return_when=asyncio.FIRST_COMPLETED
+            )
             
-            if response is not None:
-                msg = Message(sender_id=agent_id, content=response)
-                self.history.append(msg)
-                messages_added.append(msg)
+            for task in done:
+                agent = tasks.pop(task)
                 
-                if self.on_message:
-                    self.on_message(msg)
+                try:
+                    result = await task
+                except Exception as e:
+                    logger.error(f"Task failed for {agent.name}: {e}")
+                    continue
+                
+                agent_id, response = result
+                responses[agent_id] = response
+                
+                if response is not None:
+                    msg = Message(sender_id=agent_id, content=response)
+                    self.history.append(msg)
+                    messages_added.append(msg)
+                    
+                    if self.on_message:
+                        self.on_message(msg)
+                
+                # Check termination immediately
+                if response and "[DONE]" in response:
+                    for t in pending:
+                        t.cancel()
+                    tasks.clear()
+                    break
         
         terminated = False
         reason = None
