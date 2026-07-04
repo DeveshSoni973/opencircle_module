@@ -8,7 +8,7 @@ from .registry import AgentRegistry
 from .context_builder import ContextBuilder
 from .system_prompts.loader import SystemPromptLoader
 from .providers.factory import ProviderFactory
-
+import re
 from langsmith import traceable
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,6 @@ class GroupChat:
             self.system_prompt_name,
             agent_name=agent.name,
             other_agents=", ".join(other_names),
-            user_query=self.current_query,
         )
     
     @traceable(run_type="chain", name="agent_turn")
@@ -111,6 +110,15 @@ class GroupChat:
                     agent.formatted_history.extend(built[1:])
                 else:
                     agent.formatted_history.extend(built)
+            else:
+                agent.formatted_history.append({
+                    "role": "user",
+                    "content": (
+                        "No new messages have been added since your last turn. "
+                        "If you have more to contribute, continue naturally. "
+                        "Otherwise respond with [SILENT]."
+                    )
+                })
         
         agent.history_cursor = len(snapshot) - 1
         
@@ -126,8 +134,14 @@ class GroupChat:
                 max_tokens=agent.max_tokens,
             )
             
-            if response.strip() == "[SILENT]":
+            response = response.strip()
+            if not response:
                 return agent.agent_id, None
+            match = re.search(r"\[silent\]", response, flags=re.IGNORECASE)
+            if match:
+                response = response[:match.start()].rstrip()
+                if not response:
+                    return agent.agent_id, None
             return agent.agent_id, response
             
         except Exception as e:
