@@ -44,6 +44,7 @@ class Agent:
         api_key: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        max_rounds=5,
     ):
         self.name = name
         self.model = model
@@ -54,6 +55,9 @@ class Agent:
         self.agent_id = str(uuid.uuid4())
         self.formatted_history = []
         self.history_cursor = -1
+        self.rounds_taken = 0
+        self.max_rounds = max_rounds   # now per-agent, not global
+        self.task = None
     
     def __repr__(self) -> str:
         return f"Agent(name={self.name!r}, model={self.model!r}, provider={self.provider!r})"
@@ -63,27 +67,3 @@ class Agent:
             return NotImplemented
         return self.agent_id == other.agent_id
 
-
-class RoundResult:
-    """Result of one round of group chat."""
-    
-    def __init__(
-        self,
-        round_num: int,
-        responses: dict[str, Optional[str]],
-        messages_added: list[Message],
-        terminated: bool,
-        termination_reason: Optional[str] = None,
-    ):
-        self.round_num = round_num
-        self.responses = responses
-        self.messages_added = messages_added
-        self.terminated = terminated
-        self.termination_reason = termination_reason
-    
-    def __repr__(self) -> str:
-        return (
-            f"RoundResult(round={self.round_num}, "
-            f"responses={len(self.responses)}, "
-            f"terminated={self.terminated})"
-        )
