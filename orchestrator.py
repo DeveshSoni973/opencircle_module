@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from .models import Message, RoundResult
+from .models import Message
 from .registry import AgentRegistry
 from .context_builder import ContextBuilder
 from .system_prompts.loader import SystemPromptLoader
@@ -51,7 +51,6 @@ class GroupChat:
         self._providers = {}
         self.history = []
         self.current_query = ""
-        self.round_num = 0
         self.terminated = False
         if langchain_api_key:
             os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -148,90 +147,59 @@ class GroupChat:
             logger.error(f"Response failed for {agent.name}: {e}")
             return agent.agent_id, None
 
-    async def _run_round(self):
-        """Execute one round: all agents parallel, process results as they arrive."""
-        self.round_num += 1
-        
-        tasks = {
-            asyncio.create_task(self._agent_respond(agent)): agent 
-            for agent in self.agents
-        }
-        
-        responses = {}
-        messages_added = []
-        
-        while tasks:
-            done, pending = await asyncio.wait(
-                tasks.keys(), 
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
+    async def run(self, query):
+        self.current_query = query
+        self.history.append(Message(sender_id="usr", content=query))
+        self.terminated = False
+        for agent in self.agents:
+            agent.rounds_taken = 0
+
+        self._launch_ready_agents()
+
+        while any(a.task is not None for a in self.agents):
+            pending_tasks = [a.task for a in self.agents if a.task is not None]
+            done, _ = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+
             for task in done:
-                agent = tasks.pop(task)
-                
+                agent = next(a for a in self.agents if a.task is task)
+                agent.task = None
                 try:
-                    result = await task
+                    agent_id, response = await task
                 except Exception as e:
                     logger.error(f"Task failed for {agent.name}: {e}")
                     continue
-                
-                agent_id, response = result
-                responses[agent_id] = response
-                
+
                 if response is not None:
                     msg = Message(sender_id=agent_id, content=response)
                     self.history.append(msg)
-                    messages_added.append(msg)
-                    
+                    agent.rounds_taken += 1
                     if self.on_message:
                         self.on_message(msg)
-                
-                # Check termination immediately
-                if response and "[DONE]" in response:
-                    for t in pending:
-                        t.cancel()
-                    tasks.clear()
-                    break
-        
-        terminated = False
-        reason = None
-        
-        if not messages_added:
-            terminated = True
-            reason = "all_silent"
-        elif any("[DONE]" in (r or "") for r in responses.values()):
-            terminated = True
-            reason = "agent_done"
-        
-        return RoundResult(
-            round_num=self.round_num,
-            responses=responses,
-            messages_added=messages_added,
-            terminated=terminated,
-            termination_reason=reason,
-        )
-    
-    async def run(self, query):
-        """Run the group chat on a user query, continuing prior history. Returns full history."""
-        self.current_query = query
-        self.history.append(Message(sender_id="usr", content=query))
-        self.round_num = 0
-        self.terminated = False
-        
-        for _ in range(self.max_rounds):
+                    if "[DONE]" in response:
+                        self.terminated = True
+
+                if self.on_round_complete:
+                    self.on_round_complete(agent, response) 
+
             if self.terminated:
+                for a in self.agents:
+                    if a.task:
+                        a.task.cancel()
                 break
-            
-            result = await self._run_round()
-            
-            if self.on_round_complete:
-                self.on_round_complete(result)
-            
-            if result.terminated:
-                self.terminated = True
-                break
-        
+
+            self._launch_ready_agents()
+
         return self.history
+
+    def _launch_ready_agents(self):
+        for agent in self.agents:
+            if agent.task is not None:
+                continue
+            if agent.rounds_taken >= self.max_rounds:
+                continue
+            new_from_others = [m for m in self.history[agent.history_cursor + 1:] if m.sender_id != agent.agent_id]
+            if agent.history_cursor == -1 or new_from_others:
+                agent.task = asyncio.create_task(self._agent_respond(agent))
     
     def run_sync(self, query):
         """Synchronous wrapper for run()."""
@@ -248,10 +216,10 @@ class GroupChat:
     def reset(self):
         """Clear history to start a new conversation with the same agents."""
         self.history = []
-        self.round_num = 0
         self.terminated = False
         self.current_query = ""
 
         for agent in self.agents:
             agent.formatted_history = []
             agent.history_cursor = -1
+            agent.rounds_taken = 0
