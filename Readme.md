@@ -112,7 +112,7 @@ async def main():
     # 2. Initialize the chat room
     chat = GroupChat(
         agents=agents, 
-        system_prompt="debate",  # Uses system_prompts/debate.txt
+        system_prompt="debate",  # Uses src/opencircle_module/system_prompts/debate.txt
         max_rounds=3
     )
     
@@ -139,12 +139,11 @@ An `Agent` represents a single AI persona. You configure them with a `name`, a s
 The `GroupChat` class manages the lifecycle of the conversation. It holds the `AgentRegistry`, maintains the `history` of `Message` objects, and handles the `asyncio` loop that queries agents.
 
 ### System Prompts
-System prompts dictate how agents behave in the group setting. They are stored as `.txt` files in `opencircle_module/system_prompts/`. 
+System prompts dictate how agents behave in the group setting. They are stored as `.txt` files in `src/opencircle_module/system_prompts/`. 
 
 The `SystemPromptLoader` dynamically injects variables into these text files at runtime:
 - `$agent_name`: The current agent's name.
 - `$other_agents`: A comma-separated list of the *other* agents in the room.
-- `$user_query`: The initial prompt that started the conversation.
 
 **Included Templates:**
 - `default`: Basic conversational rules.
@@ -152,7 +151,7 @@ The `SystemPromptLoader` dynamically injects variables into these text files at 
 - `creative`: Encourages brainstorming and "yes, and..." thinking.
 - `technical`: Focuses on implementation details and edge cases.
 
-*To add your own, simply drop a new `my_prompt.txt` into the `system_prompts` directory and pass `system_prompt="my_prompt"` to `GroupChat`.*
+*To use your own custom prompts, create a local directory (e.g., `my_prompts/`), place a `.txt` file inside it (e.g., `creative.txt`), and initialize GroupChat with `prompts_dir="my_prompts"` and `system_prompt="creative"`.*
 
 ---
 
@@ -181,8 +180,11 @@ def handle_new_message(msg):
     # msg is a Message object
     print(f"[{msg.sender_id}] just spoke: {msg.content}")
 
-def handle_round_complete(result):
-    print(f"Round {result.round_num} finished. {len(result.messages_added)} messages added.")
+def handle_round_complete(agent, response):
+    if response is None or "[SILENT]" in response:
+        print(f"{agent.name} was silent.")
+    else:
+        print(f"{agent.name} finished speaking.")
 
 chat = GroupChat(
     agents=agents,
@@ -239,3 +241,14 @@ Once enabled, every round of chat creates a structured trace:
 - `llm_[provider]`: A detailed span showing the exact raw JSON history sent to the provider (OpenAI/Groq/etc.) and the raw text response received.
 
 This makes it easy to spot formatting errors, token limits, or logic issues in real-time.
+
+---
+
+## Testing & Examples
+
+To see more complex use-cases and verify your setup, check out the included examples and tests:
+
+- **Examples**: Browse the `examples/` directory for ready-to-run scripts.
+  - `basic_chat.py`: A simple conversational debate between two agents.
+  - `advanced_chat_callbacks.py`: Demonstrates how to hook into the chat lifecycle for real-time streaming and UI updates.
+- **Tests**: Run `pytest tests/` from the root directory to verify that the package is installed correctly and all imports work.
