@@ -1,50 +1,137 @@
-import os
-import sys
-from opencircle_module.models import Agent, Message
-from opencircle_module.orchestrator import GroupChat
+import asyncio
+import json
+from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
 
-def on_message_handler(msg: Message):
-    """Callback triggered whenever a new message is added to the history."""
-    if not msg.is_user:
-        # Display agent responses as they come in
-        print(f"\n[{msg.sender_id}] >>> {msg.content}")
+from opencircle_module import Agent, GroupChat
 
-def on_round_complete_handler(agent: Agent, response: str | None):
-    """Callback triggered when an agent finishes their turn (including when they choose to be silent)."""
-    if response is None or "[SILENT]" in response:
-        print(f"  (Agent {agent.name} decided to remain silent)")
+load_dotenv()
 
-def main():
-    # Example using Anthropic and Gemini
-    agent_claude = Agent(
-        name="Claude",
-        model="claude-3-haiku-20240307",
-        provider="anthropic",
-        temperature=0.7
-    )
-    
-    agent_gemini = Agent(
-        name="Gemini",
-        model="gemini-1.5-flash",
-        provider="google",
-        temperature=0.7
-    )
+
+class Colors:
+    USER = "\033[92m"
+    SYSTEM = "\033[90m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+
+def setup_logging():
+    """Create logs directory with timestamped session folder."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = Path("logs") / timestamp
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "session_dir": session_dir,
+        "full_history": session_dir / "full_history.jsonl",
+        "per_agent_dir": session_dir / "agents",
+    }
+
+
+def log_message(log_files, msg, registry):
+    """Append message to full history and per-agent log."""
+    name = registry.get_name(msg.sender_id)
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "sender_id": msg.sender_id,
+        "name": name,
+        "content": msg.content,
+    }
+
+    # Full history (JSONL)
+    with open(log_files["full_history"], "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Per-agent log (text)
+    if msg.sender_id != "usr":
+        agent_log = log_files["per_agent_dir"] / f"{name}.txt"
+        with open(agent_log, "a", encoding="utf-8") as f:
+            f.write(f"[{entry['timestamp']}] {entry['content']}\n\n")
+
+
+def on_message_factory(log_files, registry):
+    """Create on_message callback with logging."""
+    def on_message(msg):
+        name = registry.get_name(msg.sender_id)
+        print(f"{Colors.BOLD}{name}:{Colors.RESET} {msg.content}")
+        log_message(log_files, msg, registry)
+    return on_message
+
+
+def on_round_complete_factory(log_files, registry):
+    """Create on_round_complete callback with logging.
+
+    NOTE: current GroupChat calls on_round_complete(agent, response) —
+    there is no "result" object with round_num/responses/etc, so this
+    is written against the real signature.
+    """
+    def on_round_complete(agent, response):
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "agent": agent.name,
+            "response": response,
+        }
+
+        round_log = log_files["session_dir"] / "rounds.jsonl"
+        with open(round_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        if response is None or "[SILENT]" in (response or ""):
+            print(f"{Colors.SYSTEM}({agent.name} stayed silent){Colors.RESET}")
+    return on_round_complete
+
+
+async def terminal_gc():
+    agents = [
+        Agent(name="Llama", model="openai/gpt-oss-120b", provider="groq"),
+        Agent(name="Qwen", model="qwen/qwen3.6-27b", provider="groq", max_tokens=4096),
+    ]
 
     chat = GroupChat(
-        agents=[agent_claude, agent_gemini],
-        system_prompt="debate", # Uses the 'debate.txt' prompt
-        max_rounds=5,
-        on_message=on_message_handler,
-        on_round_complete=on_round_complete_handler
+        agents=agents,
+        system_prompt="default",
+        max_rounds=15,
     )
 
-    print("Starting Debate...")
-    query = "Is it better to use strict type hinting in Python, or rely on duck typing?"
-    print(f"User: {query}\n")
-    
-    print("Agents are thinking...")
-    # Chat output is handled dynamically by our callbacks!
-    chat.run_sync(query)
+    log_files = setup_logging()
+    log_files["per_agent_dir"].mkdir(exist_ok=True)
+
+    # Set callbacks after init so we can capture registry
+    chat.on_message = on_message_factory(log_files, chat.registry)
+    chat.on_round_complete = on_round_complete_factory(log_files, chat.registry)
+
+    print(f"{Colors.BOLD}⭕ OpenCircle Group Chat Started{Colors.RESET}")
+    print(f"{Colors.SYSTEM}Participants: {', '.join(a.name for a in agents)}{Colors.RESET}")
+    print(f"{Colors.SYSTEM}Logs: {log_files['session_dir']}{Colors.RESET}\n")
+
+    while True:
+        try:
+            user_msg = input(f"{Colors.USER}{Colors.BOLD}You:{Colors.RESET} ")
+            if user_msg.lower() in ("exit", "quit"):
+                break
+            if not user_msg.strip():
+                continue
+
+            # Log user message
+            from opencircle_module.models import Message
+            user_entry = Message(sender_id="usr", content=user_msg)
+            log_message(log_files, user_entry, chat.registry)
+
+            await chat.run(user_msg)
+
+            if chat.terminated:
+                print(f"{Colors.SYSTEM}--- Topic Resolved ---{Colors.RESET}\n")
+
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"\n{Colors.BOLD}Error:{Colors.RESET} {e}")
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(terminal_gc())
+    except KeyboardInterrupt:
+        pass
