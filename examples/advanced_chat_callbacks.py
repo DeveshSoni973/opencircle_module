@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
-from opencircle_module import Agent, GroupChat
+from opencircle_module import Agent, GroupChat, TurnStatus
 
 load_dotenv()
 
@@ -62,23 +62,26 @@ def on_message_factory(log_files, registry):
 def on_round_complete_factory(log_files, registry):
     """Create on_round_complete callback with logging.
 
-    NOTE: current GroupChat calls on_round_complete(agent, response) —
-    there is no "result" object with round_num/responses/etc, so this
-    is written against the real signature.
+    GroupChat calls on_round_complete(agent, result) once per agent turn,
+    where result is a TurnResult with status spoke / silent / error.
     """
-    def on_round_complete(agent, response):
+    def on_round_complete(agent, result):
         entry = {
             "timestamp": datetime.now().isoformat(),
             "agent": agent.name,
-            "response": response,
+            "status": result.status.value,
+            "content": result.content,
+            "error": result.error,
         }
 
         round_log = log_files["session_dir"] / "rounds.jsonl"
         with open(round_log, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-        if response is None or "[SILENT]" in (response or ""):
+        if result.status == TurnStatus.SILENT:
             print(f"{Colors.SYSTEM}({agent.name} stayed silent){Colors.RESET}")
+        elif result.status == TurnStatus.ERROR:
+            print(f"{Colors.SYSTEM}({agent.name} failed: {result.error}){Colors.RESET}")
     return on_round_complete
 
 

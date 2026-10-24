@@ -8,14 +8,14 @@ from .base import BaseProvider
 class GroqProvider(BaseProvider):
     """Groq API provider."""
     
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, base_url=None):
         super().__init__(api_key or os.environ.get("GROQ_API_KEY"))
         try:
             from groq import AsyncGroq, Groq
         except ImportError:
             raise ImportError("Install groq: pip install groq")
-        self._async_client = AsyncGroq(api_key=self.api_key)
-        self._sync_client = Groq(api_key=self.api_key)
+        self._async_client = AsyncGroq(api_key=self.api_key, base_url=base_url)
+        self._sync_client = Groq(api_key=self.api_key, base_url=base_url)
     
     def _strip_reasoning(self, text):
         """Strip reasoning/thinking blocks from response."""

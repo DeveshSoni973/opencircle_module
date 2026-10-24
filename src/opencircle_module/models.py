@@ -1,7 +1,29 @@
 """Core data models for opencircle_module."""
 
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
+
+
+class TurnStatus(str, Enum):
+    """Outcome of a single agent turn."""
+    SPOKE = "spoke"
+    SILENT = "silent"
+    ERROR = "error"
+
+
+@dataclass
+class TurnResult:
+    """What one agent did on one turn. Passed to on_round_complete."""
+    agent_id: str
+    status: TurnStatus
+    content: Optional[str] = None  # set when status is SPOKE
+    error: Optional[str] = None    # set when status is ERROR
+
+    @property
+    def is_done(self) -> bool:
+        return self.content is not None and "[DONE]" in self.content
 
 
 class Message:
@@ -44,7 +66,9 @@ class Agent:
         api_key: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
-        max_rounds=5,
+        max_rounds: Optional[int] = None,
+        base_url: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ):
         self.name = name
         self.model = model
@@ -52,11 +76,12 @@ class Agent:
         self.api_key = api_key
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.agent_id = str(uuid.uuid4())
+        self.base_url = base_url                       # custom endpoint (proxy, self-hosted, gateway)
+        self.agent_id = agent_id or str(uuid.uuid4())  # pass your own id to map turns onto your DB
         self.formatted_history = []
         self.history_cursor = -1
         self.rounds_taken = 0
-        self.max_rounds = max_rounds   # now per-agent, not global
+        self.max_rounds = max_rounds   # None = use GroupChat.max_rounds
         self.task = None
     
     def __repr__(self) -> str:

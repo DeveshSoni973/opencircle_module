@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from .models import Message
+from .models import Message, TurnResult, TurnStatus
 from .registry import AgentRegistry
 from .context_builder import ContextBuilder
 from .system_prompts.loader import SystemPromptLoader
@@ -35,7 +35,7 @@ class GroupChat:
     ):
         self.agents = agents
         self.system_prompt_name = system_prompt
-        self.max_rounds = max_rounds
+        self.max_rounds = max_rounds  # default for agents that don't set their own
         self.on_round_complete = on_round_complete
         self.on_message = on_message
         self.include_silent = include_silent_in_history
@@ -59,14 +59,16 @@ class GroupChat:
     
     def _get_provider(self, agent):
         """Get or create provider for an agent."""
-        key = f"{agent.provider}:{agent.api_key or 'env'}"
+        kwargs = {"base_url": agent.base_url} if agent.base_url else {}
+        key = (agent.provider, agent.api_key or "env", agent.base_url)
         if key not in self._providers:
             self._providers[key] = ProviderFactory().create(
                 agent.provider,
-                api_key=agent.api_key
+                api_key=agent.api_key,
+                **kwargs,
             )
         return self._providers[key]
-    
+
     def _build_system_prompt(self, agent):
         """Build system prompt for an agent from file template."""
         other_names = [a.name for a in self.agents if a.agent_id != agent.agent_id]
@@ -75,10 +77,10 @@ class GroupChat:
             agent_name=agent.name,
             other_agents=", ".join(other_names),
         )
-    
+
     @traceable(run_type="chain", name="agent_turn")
-    async def _agent_respond(self, agent):
-        """Single agent: build context, call LLM, return response or None."""
+    async def _agent_respond(self, agent) -> TurnResult:
+        """Single agent: build context, call LLM, return what happened."""
         system = self._build_system_prompt(agent)
         
         # Snapshot history at start — won't see concurrent additions
@@ -122,30 +124,26 @@ class GroupChat:
         agent.history_cursor = len(snapshot) - 1
         
         messages = [{"role": "system", "content": system}] + agent.formatted_history
-        
-        provider = self._get_provider(agent)
-        
+
         try:
+            provider = self._get_provider(agent)  # inside try: a bad provider config is this agent's error, not the run's
             response = await provider.chat(
                 model=agent.model,
                 messages=messages,
                 temperature=agent.temperature,
                 max_tokens=agent.max_tokens,
             )
-            
-            response = response.strip()
-            if not response:
-                return agent.agent_id, None
-            match = re.search(r"\[silent\]", response, flags=re.IGNORECASE)
-            if match:
-                response = response[:match.start()].rstrip()
-                if not response:
-                    return agent.agent_id, None
-            return agent.agent_id, response
-            
         except Exception as e:
             logger.error(f"Response failed for {agent.name}: {e}")
-            return agent.agent_id, None
+            return TurnResult(agent.agent_id, TurnStatus.ERROR, error=str(e))
+
+        response = (response or "").strip()
+        match = re.search(r"\[silent\]", response, flags=re.IGNORECASE)
+        if match:
+            response = response[:match.start()].rstrip()
+        if not response:
+            return TurnResult(agent.agent_id, TurnStatus.SILENT)
+        return TurnResult(agent.agent_id, TurnStatus.SPOKE, content=response)
 
     async def run(self, query):
         self.current_query = query
@@ -164,22 +162,22 @@ class GroupChat:
                 agent = next(a for a in self.agents if a.task is task)
                 agent.task = None
                 try:
-                    agent_id, response = await task
+                    result = await task
                 except Exception as e:
                     logger.error(f"Task failed for {agent.name}: {e}")
-                    continue
+                    result = TurnResult(agent.agent_id, TurnStatus.ERROR, error=str(e))
 
-                if response is not None:
-                    msg = Message(sender_id=agent_id, content=response)
+                if result.status == TurnStatus.SPOKE:
+                    msg = Message(sender_id=result.agent_id, content=result.content)
                     self.history.append(msg)
                     agent.rounds_taken += 1
                     if self.on_message:
                         self.on_message(msg)
-                    if "[DONE]" in response:
+                    if result.is_done:
                         self.terminated = True
 
                 if self.on_round_complete:
-                    self.on_round_complete(agent, response) 
+                    self.on_round_complete(agent, result)
 
             if self.terminated:
                 for a in self.agents:
@@ -195,7 +193,8 @@ class GroupChat:
         for agent in self.agents:
             if agent.task is not None:
                 continue
-            if agent.rounds_taken >= self.max_rounds:
+            limit = agent.max_rounds if agent.max_rounds is not None else self.max_rounds
+            if agent.rounds_taken >= limit:
                 continue
             new_from_others = [m for m in self.history[agent.history_cursor + 1:] if m.sender_id != agent.agent_id]
             if agent.history_cursor == -1 or new_from_others:
