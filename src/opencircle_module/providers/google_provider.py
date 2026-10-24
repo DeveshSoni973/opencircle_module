@@ -7,13 +7,14 @@ from .base import BaseProvider
 class GoogleProvider(BaseProvider):
     """Google Gemini API provider."""
     
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, base_url=None):
         super().__init__(api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
         try:
             import google.generativeai as genai
         except ImportError:
             raise ImportError("Install google-generativeai: pip install google-generativeai")
-        genai.configure(api_key=self.api_key)
+        client_options = {"api_endpoint": base_url} if base_url else None
+        genai.configure(api_key=self.api_key, client_options=client_options)
         self._genai = genai
     
     async def chat(self, model, messages, temperature=0.7, max_tokens=1024, **kwargs):

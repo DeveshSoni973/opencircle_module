@@ -187,9 +187,14 @@ def handle_new_message(msg):
     # msg is a Message object
     print(f"[{msg.sender_id}] just spoke: {msg.content}")
 
-def handle_round_complete(agent, response):
-    if response is None or "[SILENT]" in response:
+from opencircle_module import TurnStatus
+
+def handle_round_complete(agent, result):
+    # result is a TurnResult: status, content (when spoke), error (when failed)
+    if result.status == TurnStatus.SILENT:
         print(f"{agent.name} was silent.")
+    elif result.status == TurnStatus.ERROR:
+        print(f"{agent.name} failed: {result.error}")
     else:
         print(f"{agent.name} finished speaking.")
 
@@ -200,9 +205,28 @@ chat = GroupChat(
 )
 ```
 
-`msg.sender_id` is an internal UUID, not a display name — resolve it via `chat.registry.get_name(msg.sender_id)` if you want to print the agent's name instead.
+`on_round_complete` fires once for **every** agent turn — spoke, silent or error — so it's the hook to use if you persist every turn. `on_message` fires only when an agent actually spoke.
 
-Note also that `response is None` covers two different cases: a genuine provider/API failure, and a message that reduced to nothing after `[SILENT]` was stripped. Both currently look the same from the callback's perspective — check your logs (or the exception logged internally) if you need to tell them apart.
+`msg.sender_id` is the agent's `agent_id` — resolve it via `chat.registry.get_name(msg.sender_id)` if you want to print the agent's name instead. Pass `agent_id=` to `Agent` to use your own ids (e.g. database primary keys).
+
+### Customizing Agents
+
+```python
+Agent(
+    name="Reviewer",
+    model="gpt-4o",
+    provider="openai",
+    agent_id="db-agent-42",                # your own id instead of a random UUID
+    max_rounds=2,                          # overrides GroupChat's max_rounds for this agent only
+    base_url="https://my-gateway/v1",      # any provider: proxy, gateway, self-hosted endpoint
+)
+
+chat = GroupChat(
+    agents=agents,
+    system_prompt="default",               # template: default / debate / creative / technical
+    max_rounds=5,                          # default for agents that don't set their own
+)
+```
 
 ### Context Window Management
 To prevent long conversations from crashing the LLM APIs, you can limit the amount of history sent to the agents:

@@ -7,14 +7,14 @@ from .base import BaseProvider
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude API provider."""
     
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, base_url=None):
         super().__init__(api_key or os.environ.get("ANTHROPIC_API_KEY"))
         try:
             from anthropic import AsyncAnthropic, Anthropic
         except ImportError:
             raise ImportError("Install anthropic: pip install anthropic")
-        self._async_client = AsyncAnthropic(api_key=self.api_key)
-        self._sync_client = Anthropic(api_key=self.api_key)
+        self._async_client = AsyncAnthropic(api_key=self.api_key, base_url=base_url)
+        self._sync_client = Anthropic(api_key=self.api_key, base_url=base_url)
     
     async def chat(self, model, messages, temperature=0.7, max_tokens=1024, **kwargs):
         system_msg = ""
