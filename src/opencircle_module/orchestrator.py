@@ -51,6 +51,8 @@ class GroupChat:
         self._providers = {}
         self.history = []
         self.current_query = ""
+        self._active = None  # future of the run in progress; a run() call mid-run waits on it
+        self._wake = None    # set when a message arrives mid-run, to relaunch idle agents immediately
         if langchain_api_key:
             os.environ["LANGCHAIN_TRACING_V2"] = "true"
             os.environ["LANGCHAIN_API_KEY"] = langchain_api_key
@@ -148,41 +150,66 @@ class GroupChat:
         return TurnResult(agent.agent_id, TurnStatus.SPOKE, content=response, done=done)
 
     async def run(self, query):
+        """Add the user's message and let agents respond until nobody has anything new to say.
+
+        If a run is already going (message sent mid-run), the message joins that run instead:
+        agents mid-reply finish and post what they were writing, everyone else (including
+        agents that said [DONE] or used up their rounds) is invoked again. The call returns
+        when that run finishes.
+        """
         self.current_query = query
         self.history.append(Message(sender_id="usr", content=query))
         for agent in self.agents:
             agent.rounds_taken = 0
             agent.done = False
 
-        self._launch_ready_agents()
+        if self._active is not None:
+            self._wake.set()                    # wake the running loop so idle agents see the message
+            await asyncio.shield(self._active)  # shield: a cancelled caller must not cancel the run
+            return self.history
 
-        while any(a.task is not None for a in self.agents):
-            pending_tasks = [a.task for a in self.agents if a.task is not None]
-            done, _ = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
-
-            for task in done:
-                agent = next(a for a in self.agents if a.task is task)
-                agent.task = None
-                try:
-                    result = await task
-                except Exception as e:
-                    logger.error(f"Task failed for {agent.name}: {e}")
-                    result = TurnResult(agent.agent_id, TurnStatus.ERROR, error=str(e))
-
-                if result.status == TurnStatus.SPOKE:
-                    msg = Message(sender_id=result.agent_id, content=result.content)
-                    self.history.append(msg)
-                    agent.rounds_taken += 1
-                    if self.on_message:
-                        self.on_message(msg)
-                if result.done:
-                    agent.done = True  # only this agent stops; others keep going
-
-                if self.on_round_complete:
-                    self.on_round_complete(agent, result)
-
+        # only one loop drives the agents; two loops waiting on the same tasks would clash
+        self._active = asyncio.get_running_loop().create_future()
+        self._wake = asyncio.Event()  # per run: an Event is bound to the loop it is used on
+        try:
             self._launch_ready_agents()
 
+            while any(a.task is not None for a in self.agents):
+                pending_tasks = [a.task for a in self.agents if a.task is not None]
+                wake = asyncio.ensure_future(self._wake.wait())
+                done, _ = await asyncio.wait(pending_tasks + [wake], return_when=asyncio.FIRST_COMPLETED)
+                if wake in done:
+                    self._wake.clear()  # a message arrived mid-run; relaunch idle agents below
+                else:
+                    wake.cancel()
+
+                for task in done:
+                    if task is wake:
+                        continue
+                    agent = next(a for a in self.agents if a.task is task)
+                    agent.task = None
+                    try:
+                        result = await task
+                    except Exception as e:
+                        logger.error(f"Task failed for {agent.name}: {e}")
+                        result = TurnResult(agent.agent_id, TurnStatus.ERROR, error=str(e))
+
+                    if result.status == TurnStatus.SPOKE:
+                        msg = Message(sender_id=result.agent_id, content=result.content)
+                        self.history.append(msg)
+                        agent.rounds_taken += 1
+                        if self.on_message:
+                            self.on_message(msg)
+                    if result.done:
+                        agent.done = True  # only this agent stops; others keep going
+
+                    if self.on_round_complete:
+                        self.on_round_complete(agent, result)
+
+                self._launch_ready_agents()
+        finally:
+            self._active.set_result(None)
+            self._active = None
         return self.history
 
     def _launch_ready_agents(self):
