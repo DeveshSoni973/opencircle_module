@@ -18,12 +18,9 @@ class TurnResult:
     """What one agent did on one turn. Passed to on_round_complete."""
     agent_id: str
     status: TurnStatus
-    content: Optional[str] = None  # set when status is SPOKE
+    content: Optional[str] = None  # set when status is SPOKE ([DONE] already stripped)
     error: Optional[str] = None    # set when status is ERROR
-
-    @property
-    def is_done(self) -> bool:
-        return self.content is not None and "[DONE]" in self.content
+    done: bool = False             # agent said [DONE]: it stops for the rest of this run
 
 
 class Message:
@@ -81,6 +78,7 @@ class Agent:
         self.formatted_history = []
         self.history_cursor = -1
         self.rounds_taken = 0
+        self.done = False              # set when this agent says [DONE]; reset every run
         self.max_rounds = max_rounds   # None = use GroupChat.max_rounds
         self.task = None
     
