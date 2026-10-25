@@ -29,7 +29,7 @@ Traditional multi-agent frameworks rely on a central "manager" or "router" LLM t
 
 OpenCircle is built on a **Parallel Single-Phase Execution** model. 
 
-In every conversational round, the Orchestrator takes a snapshot of the canonical history and broadcasts it to all agents simultaneously. Every agent processes the context and decides to either return a message or output `[SILENT]`. If an agent (or all agents) feel the user's query is fully resolved, they can output `[DONE]` to terminate the loop.
+In every conversational round, the Orchestrator takes a snapshot of the canonical history and broadcasts it to all agents simultaneously. Every agent processes the context and decides to either return a message or output `[SILENT]`. If an agent feels it has nothing more to add, it can output `[DONE]`: that agent stops for the rest of the run, while the others carry on. The run ends naturally once no agent has anything new to respond to.
 
 ### How it Works (Data Flow)
 
@@ -51,7 +51,7 @@ In every conversational round, the Orchestrator takes a snapshot of the canonica
                        │                        │
              Append to History ─────────────────┘
                        │
-             Next Round or Exit if [DONE]
+     Next Round ([DONE] agents sit out) or Exit
 ```
 
 ---

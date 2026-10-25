@@ -123,9 +123,6 @@ async def terminal_gc():
 
             await chat.run(user_msg)
 
-            if chat.terminated:
-                print(f"{Colors.SYSTEM}--- Topic Resolved ---{Colors.RESET}\n")
-
         except KeyboardInterrupt:
             print("\nExiting...")
             break

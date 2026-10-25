@@ -51,7 +51,6 @@ class GroupChat:
         self._providers = {}
         self.history = []
         self.current_query = ""
-        self.terminated = False
         if langchain_api_key:
             os.environ["LANGCHAIN_TRACING_V2"] = "true"
             os.environ["LANGCHAIN_API_KEY"] = langchain_api_key
@@ -138,19 +137,22 @@ class GroupChat:
             return TurnResult(agent.agent_id, TurnStatus.ERROR, error=str(e))
 
         response = (response or "").strip()
+        done = re.search(r"\[done\]", response, flags=re.IGNORECASE) is not None
+        if done:
+            response = re.sub(r"\s*\[done\]\s*", " ", response, flags=re.IGNORECASE).strip()
         match = re.search(r"\[silent\]", response, flags=re.IGNORECASE)
         if match:
             response = response[:match.start()].rstrip()
         if not response:
-            return TurnResult(agent.agent_id, TurnStatus.SILENT)
-        return TurnResult(agent.agent_id, TurnStatus.SPOKE, content=response)
+            return TurnResult(agent.agent_id, TurnStatus.SILENT, done=done)
+        return TurnResult(agent.agent_id, TurnStatus.SPOKE, content=response, done=done)
 
     async def run(self, query):
         self.current_query = query
         self.history.append(Message(sender_id="usr", content=query))
-        self.terminated = False
         for agent in self.agents:
             agent.rounds_taken = 0
+            agent.done = False
 
         self._launch_ready_agents()
 
@@ -173,17 +175,11 @@ class GroupChat:
                     agent.rounds_taken += 1
                     if self.on_message:
                         self.on_message(msg)
-                    if result.is_done:
-                        self.terminated = True
+                if result.done:
+                    agent.done = True  # only this agent stops; others keep going
 
                 if self.on_round_complete:
                     self.on_round_complete(agent, result)
-
-            if self.terminated:
-                for a in self.agents:
-                    if a.task:
-                        a.task.cancel()
-                break
 
             self._launch_ready_agents()
 
@@ -191,7 +187,7 @@ class GroupChat:
 
     def _launch_ready_agents(self):
         for agent in self.agents:
-            if agent.task is not None:
+            if agent.task is not None or agent.done:
                 continue
             limit = agent.max_rounds if agent.max_rounds is not None else self.max_rounds
             if agent.rounds_taken >= limit:
@@ -215,10 +211,10 @@ class GroupChat:
     def reset(self):
         """Clear history to start a new conversation with the same agents."""
         self.history = []
-        self.terminated = False
         self.current_query = ""
 
         for agent in self.agents:
             agent.formatted_history = []
             agent.history_cursor = -1
             agent.rounds_taken = 0
+            agent.done = False
