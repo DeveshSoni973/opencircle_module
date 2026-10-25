@@ -39,10 +39,6 @@ class Message:
     def is_silent(self) -> bool:
         return self.content.strip() == "[SILENT]"
     
-    @property
-    def is_done(self) -> bool:
-        return "[DONE]" in self.content
-    
     def __repr__(self) -> str:
         return f"Message(sender_id={self.sender_id[:8]!r}, content={self.content[:40]!r})"
     
